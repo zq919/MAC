@@ -44,12 +44,6 @@ def norm_L2(comm: MPI.Intracomm, expr, measure=ufl.dx) -> np.floating:
 
 
 
-def mean_value(comm: MPI.Intracomm, expr, measure) -> np.floating:
-    numerator = fem.assemble_scalar(fem.form(expr * measure))
-    denominator = fem.assemble_scalar(fem.form(1 * measure))
-    return comm.allreduce(numerator, op=MPI.SUM) / comm.allreduce(denominator, op=MPI.SUM)
-
-
 
 def compute_cell_boundary_facets(msh: mesh.Mesh) -> np.ndarray:
     """Return integration entities for all cell boundaries in ``msh``."""
@@ -189,6 +183,7 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
 
     # Exact solution and forcing term
     nu = fem.Constant(msh, dtype(1.0))
+    epsilon_p = fem.Constant(msh, dtype(1.0e-12))
     x = ufl.SpatialCoordinate(msh)
     u_exact = velocity_exact(x)
     p_exact = pressure_exact(x)
@@ -210,7 +205,9 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     # Stokes coupling with the HDG polynomial spaces.
     b_vp = -inner(p_h, div(v_h)) * dx_c + inner(dot(v_h, n_vec), pbar_h) * ds_c(cell_boundaries)
     b_uq = -inner(q_h, div(u_h)) * dx_c + inner(dot(u_h, n_vec), qbar_h) * ds_c(cell_boundaries)
-    A_form = a + b_vp + b_uq
+    # Small pressure regularization removes the constant-pressure nullspace and
+    # lets us use direct solvers without a separate gauge constraint.
+    A_form = a + b_vp + b_uq + epsilon_p * p_h * q_h * dx_c
 
     zero_vec_f = fem.Constant(facet_mesh, np.zeros(gdim, dtype=PETSc.ScalarType))
     zero_scalar_c = fem.Constant(msh, dtype(0.0))
@@ -241,28 +238,15 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     A.assemble()
     b = assemble_vector_block(L_blocked, A_blocked, bcs=[velocity_bc])
 
-    # Nullspace for the constant pressure/(trace-pressure) mode.
-    offset_u = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
-    offset_ubar = Vbar.dofmap.index_map.size_local * Vbar.dofmap.index_map_bs
-    offset_p = Q.dofmap.index_map.size_local * Q.dofmap.index_map_bs
-    offset_pbar = Qbar.dofmap.index_map.size_local * Qbar.dofmap.index_map_bs
-    start_p = offset_u + offset_ubar
-    start_pbar = start_p + offset_p
-
-    null_vec = A.createVecRight()
-    null_vec.set(0.0)
-    null_array = null_vec.array
-    null_array[start_p : start_p + offset_p] = 1.0
-    null_array[start_pbar : start_pbar + offset_pbar] = 1.0
-    null_vec.normalize()
-    nullspace = PETSc.NullSpace().create(vectors=[null_vec])
-    A.setNullSpace(nullspace)
-    nullspace.remove(b)
-
     # Solve with a robust direct/fallback PETSc strategy.
     x_vec = solve_with_petsc(A, b, msh.comm, prefix=f"hdg_stokes_{n}")
 
     # Scatter the monolithic solution into Functions.
+    offset_u = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
+    offset_ubar = Vbar.dofmap.index_map.size_local * Vbar.dofmap.index_map_bs
+    offset_p = Q.dofmap.index_map.size_local * Q.dofmap.index_map_bs
+    offset_pbar = Qbar.dofmap.index_map.size_local * Qbar.dofmap.index_map_bs
+
     uh = fem.Function(V)
     ubarh = fem.Function(Vbar)
     ph = fem.Function(Q)
@@ -282,15 +266,6 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     pbarh.x.scatter_forward()
 
     # Error norms
-    # Stokes pressure is defined only up to a constant, so remove the mean
-    # before computing the pressure L2 error. The exact pressure used here has
-    # zero mean on the unit square.
-    p_mean = mean_value(msh.comm, ph, dx_c)
-    ph.x.array[:] -= p_mean
-    pbarh.x.array[:] -= p_mean
-    ph.x.scatter_forward()
-    pbarh.x.scatter_forward()
-
     x = ufl.SpatialCoordinate(msh)
     u_exact = velocity_exact(x)
     p_exact = pressure_exact(x)
