@@ -186,6 +186,7 @@ def main() -> None:
     num_facets = facet_imap.size_local + facet_imap.num_ghosts
     facets = np.arange(num_facets, dtype=np.int32)
     facet_mesh, entity_map, _, _ = mesh.create_submesh(msh, fdim, facets)
+    facet_mesh.topology.create_connectivity(facet_mesh.topology.dim, facet_mesh.topology.dim)
     timings["create_facet_mesh"] = timer.stop()
 
     timer = LoggedTimer("Create function spaces", comm)
