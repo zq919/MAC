@@ -70,6 +70,76 @@ def pressure_exact(x):
 
 
 
+def solve_with_petsc(A: PETSc.Mat, b: PETSc.Vec, comm: MPI.Intracomm, prefix: str) -> PETSc.Vec:
+    """Solve the linear system with a robust direct/fallback strategy."""
+    attempts = [
+        {
+            "name": "mumps_lu",
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "extra": {
+                "mat_mumps_icntl_24": 1,
+                "mat_mumps_icntl_25": 1,
+            },
+        },
+        {
+            "name": "superlu_dist_lu",
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "superlu_dist",
+            "extra": {},
+        },
+        {
+            "name": "gmres_hypre",
+            "ksp_type": "gmres",
+            "pc_type": "hypre",
+            "extra": {
+                "ksp_rtol": 1.0e-10,
+                "ksp_atol": 1.0e-12,
+                "ksp_max_it": 5000,
+            },
+        },
+        {
+            "name": "gmres_bjacobi",
+            "ksp_type": "gmres",
+            "pc_type": "bjacobi",
+            "extra": {
+                "ksp_rtol": 1.0e-10,
+                "ksp_atol": 1.0e-12,
+                "ksp_max_it": 5000,
+            },
+        },
+    ]
+
+    last_error: str | None = None
+    for i, attempt in enumerate(attempts):
+        local_prefix = f"{prefix}_{i}_"
+        opts = PETSc.Options()
+        ksp = PETSc.KSP().create(comm)
+        ksp.setOperators(A)
+        ksp.setOptionsPrefix(local_prefix)
+        opts[f"{local_prefix}ksp_type"] = attempt["ksp_type"]
+        opts[f"{local_prefix}pc_type"] = attempt["pc_type"]
+        if "pc_factor_mat_solver_type" in attempt:
+            opts[f"{local_prefix}pc_factor_mat_solver_type"] = attempt["pc_factor_mat_solver_type"]
+        for key, value in attempt["extra"].items():
+            opts[f"{local_prefix}{key}"] = value
+        ksp.setFromOptions()
+        x = A.createVecRight()
+        x.set(0.0)
+        try:
+            ksp.solve(b, x)
+            if ksp.getConvergedReason() > 0:
+                par_print(comm, f"Solver used: {attempt['name']}")
+                return x
+            last_error = f"{attempt['name']} failed with reason={ksp.getConvergedReason()}"
+        except PETSc.Error as e:
+            last_error = f"{attempt['name']} raised PETSc error {e.ierr}"
+
+    raise RuntimeError(last_error or "PETSc solver failed without diagnostic information")
+
+
 def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, float]:
     """Solve the HDG Stokes problem on an n x n mesh."""
     dtype = PETSc.ScalarType
@@ -182,18 +252,8 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     A.setNullSpace(nullspace)
     nullspace.remove(b)
 
-    # Solve with a separate vector (the nullspace basis vector may be read-locked).
-    x_vec = A.createVecRight()
-    x_vec.set(0.0)
-    ksp = PETSc.KSP().create(msh.comm)
-    ksp.setOperators(A)
-    ksp.setType("gmres")
-    ksp.getPC().setType("none")
-    ksp.setTolerances(rtol=1.0e-10, atol=1.0e-12, max_it=5000)
-    ksp.solve(b, x_vec)
-
-    if ksp.getConvergedReason() <= 0:
-        raise RuntimeError(f"PETSc KSP failed to converge, reason={ksp.getConvergedReason()}")
+    # Solve with a robust direct/fallback PETSc strategy.
+    x_vec = solve_with_petsc(A, b, msh.comm, prefix=f"hdg_stokes_{n}")
 
     # Scatter the monolithic solution into Functions.
     uh = fem.Function(V)
