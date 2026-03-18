@@ -44,6 +44,13 @@ def norm_L2(comm: MPI.Intracomm, expr, measure=ufl.dx) -> np.floating:
 
 
 
+def mean_value(comm: MPI.Intracomm, expr, measure) -> np.floating:
+    numerator = fem.assemble_scalar(fem.form(expr * measure))
+    denominator = fem.assemble_scalar(fem.form(1 * measure))
+    return comm.allreduce(numerator, op=MPI.SUM) / comm.allreduce(denominator, op=MPI.SUM)
+
+
+
 def compute_cell_boundary_facets(msh: mesh.Mesh) -> np.ndarray:
     """Return integration entities for all cell boundaries in ``msh``."""
     tdim = msh.topology.dim
@@ -275,6 +282,15 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     pbarh.x.scatter_forward()
 
     # Error norms
+    # Stokes pressure is defined only up to a constant, so remove the mean
+    # before computing the pressure L2 error. The exact pressure used here has
+    # zero mean on the unit square.
+    p_mean = mean_value(msh.comm, ph, dx_c)
+    ph.x.array[:] -= p_mean
+    pbarh.x.array[:] -= p_mean
+    ph.x.scatter_forward()
+    pbarh.x.scatter_forward()
+
     x = ufl.SpatialCoordinate(msh)
     u_exact = velocity_exact(x)
     p_exact = pressure_exact(x)
