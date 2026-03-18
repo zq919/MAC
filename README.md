@@ -1,21 +1,23 @@
 # MAC
 
-## FEniCSx 0.9.0 compatibility note
+## FEniCSx 0.9.0 runnable HDG convection-diffusion example
 
-This repository now includes `hdg_conv_diff_fenicsx_0_9_fix.py`, a patched HDG
-convection-diffusion example for FEniCSx 0.9.0.
+This repository now includes `hdg_conv_diff_fenicsx_0_9_fix.py`, a standalone
+HDG convection-diffusion script written against the FEniCSx 0.9.0 API.
 
-### What changed
+## Why the original code still failed on 0.9.0
 
-The original code assumed that `mesh.create_submesh(...)` returned an object
-with a `sub_topology_to_topology(..., inverse=True)` method. In FEniCSx 0.9.0,
-the returned entity map is a NumPy array, so the parent-mesh boundary facets
-must be mapped back to submesh facets by explicitly building the inverse map.
+Besides the `create_submesh(...)` entity-map difference, FEniCSx 0.9.0 also
+expects mixed-domain forms to be compiled with `fem.form(..., entity_maps=...)`
+using a dictionary keyed by the non-integration mesh, and the blocked linear
+system should be assembled with `assemble_matrix_block` /
+`assemble_vector_block` before solving it with PETSc.
 
-### Key fix
+## What this script does
 
-Use `parent_to_sub_entities(...)` to support both APIs:
-
-- Newer FEniCSx releases: call `sub_topology_to_topology(..., inverse=True)`.
-- FEniCSx 0.9.0: invert the `submesh_entity -> parent_entity` NumPy array and
-  index it with the parent boundary facets.
+- builds the inverse map `mesh_to_facet_mesh` from parent-mesh facets to the
+  facet submesh;
+- compiles the mixed-domain blocked forms with
+  `entity_maps = {facet_mesh: mesh_to_facet_mesh}`;
+- assembles and solves the HDG linear system with PETSc block assembly tools;
+- applies Dirichlet data on the trace space and reports `e_u` and `e_ubar`.
