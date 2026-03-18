@@ -1,9 +1,8 @@
 """FEniCSx 0.9.0 HDG Stokes demo in 2D.
 
-This version follows the divergence-free HDG space choice shown in the user
-material for simplex meshes:
+This version follows the HDG polynomial-space definition requested by the user:
 
-- V_h(K): BDM_k(K)         (Piola-mapped [P_k]^d space)
+- V_h(K): [P_k(K)]^d  (discontinuous)
 - Vbar_h(F): [P_k(F)]^d
 - Q_h(K): P_{k-1}(K)
 - Qbar_h(F): P_k(F)
@@ -89,8 +88,8 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     mesh_to_facet_mesh[facet_mesh_to_mesh] = np.arange(len(facet_mesh_to_mesh), dtype=np.int32)
     entity_maps = {facet_mesh: mesh_to_facet_mesh}
 
-    # Divergence-free HDG spaces on simplices.
-    V_el = basix.ufl.element("BDM", msh.basix_cell(), k, discontinuous=True)
+    # HDG polynomial spaces requested by the user.
+    V_el = basix.ufl.element("P", msh.basix_cell(), k, discontinuous=True, shape=(gdim,))
     Vbar_el = basix.ufl.element("P", facet_mesh.basix_cell(), k, discontinuous=True, shape=(gdim,))
     Q_el = basix.ufl.element("P", msh.basix_cell(), k - 1, discontinuous=True)
     Qbar_el = basix.ufl.element("P", facet_mesh.basix_cell(), k, discontinuous=True)
@@ -131,8 +130,7 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
         + nu * (alpha / h) * inner(u_h - ubar_h, v_h - vbar_h) * ds_c(cell_boundaries)
     )
 
-    # Stokes coupling. With div(u_h) in Q_h = P_{k-1}, the constraint b_h(u_h, q_h)=0
-    # enforces exact element-wise incompressibility in this discrete setting.
+    # Stokes coupling with the HDG polynomial spaces.
     b_vp = -inner(p_h, div(v_h)) * dx_c + inner(dot(v_h, n_vec), pbar_h) * ds_c(cell_boundaries)
     b_uq = -inner(q_h, div(u_h)) * dx_c + inner(dot(u_h, n_vec), qbar_h) * ds_c(cell_boundaries)
     A_form = a + b_vp + b_uq
