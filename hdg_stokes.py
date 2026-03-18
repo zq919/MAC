@@ -110,7 +110,8 @@ def normal_jump_error(msh, uh) -> float:
 def build_kernel_getter(dtype_name: str):
     def _kernel(ufcx_form, integral_type: IntegralType, local_index: int = 0):
         offsets = ufcx_form.form_integral_offsets
-        start = offsets[int(integral_type)]
+        integral_index = getattr(integral_type, "value", integral_type)
+        start = offsets[integral_index]
         return getattr(ufcx_form.form_integrals[start + local_index], f"tabulate_tensor_{dtype_name}")
 
     return _kernel
