@@ -28,7 +28,7 @@ This repository contains FEniCSx 0.9.0-oriented HDG examples and notes.
 
 ### Notes
 
-- `VARIATIONAL_FORM.md` explains the variational formulation used by the HDG
-  convection-diffusion script.
+- `VARIATIONAL_FORM.md` explains the strong/variational formulations used by the HDG
+  convection-diffusion and Stokes scripts.
 - The mixed-domain FEniCSx 0.9.0 examples in this repository use facet submeshes,
   `entity_maps`, and blocked PETSc assembly.
