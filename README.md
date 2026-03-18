@@ -5,6 +5,8 @@
 This repository now includes `hdg_conv_diff_fenicsx_0_9_fix.py`, a standalone
 HDG convection-diffusion script written against the FEniCSx 0.9.0 API.
 
+For the mathematical statement of the HDG method implemented in the script, see `VARIATIONAL_FORM.md`.
+
 ## Why the original code still failed on 0.9.0
 
 Besides the `create_submesh(...)` entity-map difference, FEniCSx 0.9.0 also
