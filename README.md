@@ -1,25 +1,25 @@
 # MAC
 
-## FEniCSx 0.9.0 runnable HDG convection-diffusion example
+## FEniCSx 0.9.0 HDG demos
 
-This repository now includes `hdg_conv_diff_fenicsx_0_9_fix.py`, a standalone
-HDG convection-diffusion script written against the FEniCSx 0.9.0 API.
+This repository contains FEniCSx 0.9.0-oriented HDG examples and notes.
 
-For the mathematical statement of the HDG method implemented in the script, see `VARIATIONAL_FORM.md`.
+### Available scripts
 
-## Why the original code still failed on 0.9.0
+- `hdg_conv_diff_fenicsx_0_9_fix.py`: HDG convection-diffusion example on the unit square.
+- `hdg_stokes_fenicsx_0_9.py`: 2D HDG Stokes example using the analytical solution
+  
+  $$
+  u_1 = -x^2(x-1)^2 y(y-1)(2y-1),\qquad
+  u_2 = x(x-1)(2x-1)y^2(y-1)^2,\qquad
+  p = x^6 - y^6,
+  $$
 
-Besides the `create_submesh(...)` entity-map difference, FEniCSx 0.9.0 also
-expects mixed-domain forms to be compiled with `fem.form(..., entity_maps=...)`
-using a dictionary keyed by the non-integration mesh, and the blocked linear
-system should be assembled with `assemble_matrix_block` /
-`assemble_vector_block` before solving it with PETSc.
+  and reporting the velocity L2 error, pressure L2 error, and divergence L2 error.
 
-## What this script does
+### Notes
 
-- builds the inverse map `mesh_to_facet_mesh` from parent-mesh facets to the
-  facet submesh;
-- compiles the mixed-domain blocked forms with
-  `entity_maps = {facet_mesh: mesh_to_facet_mesh}`;
-- assembles and solves the HDG linear system with PETSc block assembly tools;
-- applies Dirichlet data on the trace space and reports `e_u` and `e_ubar`.
+- `VARIATIONAL_FORM.md` explains the variational formulation used by the HDG
+  convection-diffusion script.
+- The mixed-domain FEniCSx 0.9.0 examples in this repository use facet submeshes,
+  `entity_maps`, and blocked PETSc assembly.
