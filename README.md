@@ -7,15 +7,25 @@ This repository contains FEniCSx 0.9.0-oriented HDG examples and notes.
 ### Available scripts
 
 - `hdg_conv_diff_fenicsx_0_9_fix.py`: HDG convection-diffusion example on the unit square.
-- `hdg_stokes_fenicsx_0_9.py`: 2D HDG Stokes example using the analytical solution
-  
+- `hdg_stokes_fenicsx_0_9.py`: 2D HDG Stokes example on simplices using the
+  divergence-free space choice
+
+  $$
+  V_h(K)=\mathrm{BDM}_k(K),\qquad
+  \bar V_h(F)=[P_k(F)]^d,\qquad
+  Q_h(K)=P_{k-1}(K),\qquad
+  \bar Q_h(F)=P_k(F),
+  $$
+
+  with the analytical solution
+
   $$
   u_1 = -x^2(x-1)^2 y(y-1)(2y-1),\qquad
   u_2 = x(x-1)(2x-1)y^2(y-1)^2,\qquad
   p = x^6 - y^6,
   $$
 
-  and reporting the velocity L2 error, pressure L2 error, and divergence L2 error.
+  and reporting refinement-table errors/rates for velocity, pressure, and divergence.
 
 ### Notes
 
