@@ -148,6 +148,21 @@ def _register_callback(pyfun):
 
 
 
+def _double_ptr(array) -> "cffi.FFI.CData":
+    return ffi.cast("double *", ffi.from_buffer(array))
+
+
+
+def _int_ptr(array) -> "cffi.FFI.CData":
+    return ffi.cast("int *", ffi.from_buffer(array))
+
+
+
+def _uchar_ptr(array) -> "cffi.FFI.CData":
+    return ffi.cast("unsigned char *", ffi.from_buffer(array))
+
+
+
 def boundary(x, tdim: int):
     lr = np.isclose(x[0], 0.0) | np.isclose(x[0], 1.0)
     tb = np.isclose(x[1], 0.0) | np.isclose(x[1], 1.0)
@@ -324,8 +339,8 @@ def main() -> None:
         A_22 = np.zeros((num_cell_facets * Vbar_ele_space_dim, num_cell_facets * Vbar_ele_space_dim), dtype=SCALAR_DTYPE)
         A_22_f = np.zeros((Vbar_ele_space_dim, Vbar_ele_space_dim), dtype=SCALAR_DTYPE)
 
-        kernel_00_cell(ffi.from_buffer(A_00), ffi.from_buffer(null64), ffi.from_buffer(constants), ffi.from_buffer(coords), ffi.from_buffer(null32), ffi.from_buffer(null8))
-        kernel_10(ffi.from_buffer(A_10), ffi.from_buffer(null64), ffi.from_buffer(null64), ffi.from_buffer(coords), ffi.from_buffer(null32), ffi.from_buffer(null8))
+        kernel_00_cell(_double_ptr(A_00), _double_ptr(null64), _double_ptr(constants), _double_ptr(coords), _int_ptr(null32), _uchar_ptr(null8))
+        kernel_10(_double_ptr(A_10), _double_ptr(null64), _double_ptr(null64), _double_ptr(coords), _int_ptr(null32), _uchar_ptr(null8))
 
         entity_local_index = np.zeros(1, dtype=np.int32)
         for local_facet in range(num_cell_facets):
@@ -334,10 +349,10 @@ def main() -> None:
             A_30_f.fill(0.0)
             A_22_f.fill(0.0)
 
-            kernel_00_facet(ffi.from_buffer(A_00), ffi.from_buffer(null64), ffi.from_buffer(constants), ffi.from_buffer(coords), ffi.from_buffer(entity_local_index), ffi.from_buffer(null8))
-            kernel_20(ffi.from_buffer(A_20_f), ffi.from_buffer(null64), ffi.from_buffer(visc), ffi.from_buffer(coords), ffi.from_buffer(entity_local_index), ffi.from_buffer(null8))
-            kernel_30(ffi.from_buffer(A_30_f), ffi.from_buffer(null64), ffi.from_buffer(null64), ffi.from_buffer(coords), ffi.from_buffer(entity_local_index), ffi.from_buffer(null8))
-            kernel_22(ffi.from_buffer(A_22_f), ffi.from_buffer(null64), ffi.from_buffer(visc), ffi.from_buffer(coords), ffi.from_buffer(entity_local_index), ffi.from_buffer(null8))
+            kernel_00_facet(_double_ptr(A_00), _double_ptr(null64), _double_ptr(constants), _double_ptr(coords), _int_ptr(entity_local_index), _uchar_ptr(null8))
+            kernel_20(_double_ptr(A_20_f), _double_ptr(null64), _double_ptr(visc), _double_ptr(coords), _int_ptr(entity_local_index), _uchar_ptr(null8))
+            kernel_30(_double_ptr(A_30_f), _double_ptr(null64), _double_ptr(null64), _double_ptr(coords), _int_ptr(entity_local_index), _uchar_ptr(null8))
+            kernel_22(_double_ptr(A_22_f), _double_ptr(null64), _double_ptr(visc), _double_ptr(coords), _int_ptr(entity_local_index), _uchar_ptr(null8))
 
             row0 = local_facet * Vbar_ele_space_dim
             row1 = row0 + Vbar_ele_space_dim
@@ -363,7 +378,7 @@ def main() -> None:
 
     def compute_L_tilde(coords, constants, coeffs):
         b_0 = np.zeros(V_ele_space_dim, dtype=SCALAR_DTYPE)
-        kernel_0(ffi.from_buffer(b_0), ffi.from_buffer(coeffs), ffi.from_buffer(constants), ffi.from_buffer(coords), ffi.from_buffer(null32), ffi.from_buffer(null8))
+        kernel_0(_double_ptr(b_0), _double_ptr(coeffs), _double_ptr(constants), _double_ptr(coords), _int_ptr(null32), _uchar_ptr(null8))
         L_tilde = np.zeros(V_ele_space_dim + Q_ele_space_dim, dtype=SCALAR_DTYPE)
         L_tilde[:V_ele_space_dim] = b_0
         return L_tilde
@@ -417,7 +432,7 @@ def main() -> None:
         for local_facet in range(num_cell_facets):
             entity_local_index[0] = local_facet
             P_11_f.fill(0.0)
-            kernel_p11(ffi.from_buffer(P_11_f), ffi.from_buffer(null64), ffi.from_buffer(constants), ffi.from_buffer(coords), ffi.from_buffer(entity_local_index), ffi.from_buffer(null8))
+            kernel_p11(_double_ptr(P_11_f), _double_ptr(null64), _double_ptr(constants), _double_ptr(coords), _int_ptr(entity_local_index), _uchar_ptr(null8))
             row0 = local_facet * Qbar_ele_space_dim
             row1 = row0 + Qbar_ele_space_dim
             P_local[row0:row1, row0:row1] = P_11_f
