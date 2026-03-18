@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import collections.abc
 from collections.abc import Sequence
 from typing import Any
 
 from petsc4py import PETSc
 
-from dolfinx.fem import pack_coefficients
+from dolfinx.fem.assemble import pack_coefficients as _pack_coefficients
 from dolfinx.fem.petsc import (
     apply_lifting as _apply_lifting,
     assemble_matrix as _assemble_matrix,
@@ -29,6 +30,21 @@ __all__ = [
     "create_matrix_block",
     "pack_coefficients",
 ]
+
+
+
+def pack_coefficients(form):
+    """Pack coefficients for Python `Form` wrappers and nested form containers."""
+
+    def _pack(obj):
+        if obj is None:
+            return {}
+        if isinstance(obj, collections.abc.Iterable) and not hasattr(obj, "_cpp_object"):
+            return [_pack(sub_obj) for sub_obj in obj]
+        return _pack_coefficients(getattr(obj, "_cpp_object", obj))
+
+    return _pack(form)
+
 
 
 def apply_lifting(
