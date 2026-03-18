@@ -180,14 +180,16 @@ nullspace = PETSc.NullSpace().create(vectors=[null_vec])
 A.setNullSpace(nullspace)
 nullspace.remove(b)
 
-# Solve. GMRES + no preconditioner avoids depending on external sparse LU packages
-# and handles the pressure nullspace through the PETSc nullspace object.
+# Solve. Use a separate solution vector: the nullspace basis vector is owned by
+# the PETSc NullSpace object and may be locked for read access.
+x_vec = A.createVecRight()
+x_vec.set(0.0)
 ksp = PETSc.KSP().create(msh.comm)
 ksp.setOperators(A)
 ksp.setType("gmres")
 ksp.getPC().setType("none")
 ksp.setTolerances(rtol=1.0e-10, atol=1.0e-12, max_it=5000)
-ksp.solve(b, null_vec)
+ksp.solve(b, x_vec)
 
 if ksp.getConvergedReason() <= 0:
     raise RuntimeError(f"PETSc KSP failed to converge, reason={ksp.getConvergedReason()}")
@@ -197,7 +199,7 @@ uh = fem.Function(V)
 ubarh = fem.Function(Vbar)
 ph = fem.Function(Q)
 pbarh = fem.Function(Qbar)
-sol = null_vec.array_r
+sol = x_vec.array_r
 pos = 0
 uh.x.array[:offset_u] = sol[pos : pos + offset_u]
 pos += offset_u
