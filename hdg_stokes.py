@@ -155,7 +155,7 @@ def _double_ptr(array) -> "cffi.FFI.CData":
 
 
 def _int_ptr(array) -> "cffi.FFI.CData":
-    return ffi.cast("int *", ffi.from_buffer(array))
+    return ffi.cast("int32_t *", ffi.from_buffer(array))
 
 
 
