@@ -244,17 +244,22 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     zero_vec_f = fem.Constant(facet_mesh, np.zeros(gdim, dtype=PETSc.ScalarType))
     zero_scalar_c = fem.Constant(msh, dtype(0.0))
     zero_scalar_f = fem.Constant(facet_mesh, dtype(0.0))
-    L_form = (
-        inner(f, v_h) * dx_c
-        + inner(g_N, v_h) * ds(NEUMANN_TAG)
-        - inner(g_N_bar, vbar_h) * dx_f_neumann(NEUMANN_TAG)
-        + inner(zero_vec_f, vbar_h) * dx_f
-        + zero_scalar_c * q_h * dx_c
-        + zero_scalar_f * qbar_h * dx_f
-    )
+
+    # Build RHS blocks manually. In FEniCSx 0.9.0, extracting mixed-domain
+    # blocks from a single linear form is fragile when different blocks live on
+    # different integration domains.
+    L_u = inner(f, v_h) * dx_c + inner(g_N, v_h) * ds(NEUMANN_TAG)
+    L_ubar = -inner(g_N_bar, vbar_h) * dx_f_neumann(NEUMANN_TAG) + inner(zero_vec_f, vbar_h) * dx_f
+    L_p = zero_scalar_c * q_h * dx_c
+    L_pbar = zero_scalar_f * qbar_h * dx_f
 
     A_blocked = fem.form(ufl.extract_blocks(A_form), entity_maps=entity_maps)
-    L_blocked = fem.form(ufl.extract_blocks(L_form), entity_maps=entity_maps)
+    L_blocked = [
+        fem.form(L_u),
+        fem.form(L_ubar),
+        fem.form(L_p),
+        fem.form(L_pbar),
+    ]
 
     facet_mesh_boundary_facets = mesh_to_facet_mesh[dirichlet_facets]
     facet_mesh_boundary_facets = facet_mesh_boundary_facets[facet_mesh_boundary_facets >= 0]
