@@ -75,6 +75,29 @@ def left_right_boundary(x):
 
 
 
+def neumann_traction_exact(x):
+    """Exact Neumann traction on the left/right boundaries.
+
+    The traction is computed for the strong form -nu Δu + ∇p = f with
+    g_N = -nu * ∂_n u + p n and nu = 1. On the left/right boundaries, the
+    outward normal is (-1, 0) / (1, 0), respectively.
+    """
+    y_poly = x[1] * (x[1] - 1.0) * (2.0 * x[1] - 1.0)
+    dy_u1 = -(x[0] ** 2) * (x[0] - 1.0) ** 2 * (6.0 * x[1] ** 2 - 6.0 * x[1] + 1.0)
+    dx_u1 = -2.0 * x[0] * (x[0] - 1.0) * (2.0 * x[0] - 1.0) * y_poly
+
+    y_sq = x[1] ** 2 * (x[1] - 1.0) ** 2
+    dx_u2 = (6.0 * x[0] ** 2 - 6.0 * x[0] + 1.0) * y_sq
+    # du2/dy is not needed for left/right traction since n_x = ±1 and n_y = 0
+
+    p_val = x[0] ** 6 - x[1] ** 6
+    normal_sign = np.where(np.isclose(x[0], 0.0), -1.0, 1.0)
+
+    traction_x = -normal_sign * dx_u1 + normal_sign * p_val
+    traction_y = -normal_sign * dx_u2
+    return np.vstack((traction_x, traction_y))
+
+
 def solve_with_petsc(A: PETSc.Mat, b: PETSc.Vec, comm: MPI.Intracomm, prefix: str) -> PETSc.Vec:
     attempts = [
         {
@@ -186,6 +209,14 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     facet_tags = mesh.meshtags(msh, fdim, mt_facets[order], mt_values[order])
     ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
 
+    facet_mesh_neumann_facets = mesh_to_facet_mesh[neumann_facets]
+    facet_mesh_neumann_facets = facet_mesh_neumann_facets[facet_mesh_neumann_facets >= 0]
+    dx_f_neumann = ufl.Measure(
+        "dx",
+        domain=facet_mesh,
+        subdomain_data=[(NEUMANN_TAG, facet_mesh_neumann_facets)],
+    )
+
     nu = fem.Constant(msh, dtype(1.0))
     epsilon_p = fem.Constant(msh, dtype(1.0e-12))
     x = ufl.SpatialCoordinate(msh)
@@ -197,6 +228,8 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     n_vec = ufl.FacetNormal(msh)
     alpha = fem.Constant(msh, dtype(16.0 * k**2))
     g_N = -nu * dot(grad(u_exact), n_vec) + p_exact * n_vec
+    g_N_bar = fem.Function(Vbar)
+    g_N_bar.interpolate(neumann_traction_exact)
 
     a = (
         nu * inner(grad(u_h), grad(v_h)) * dx_c
@@ -213,7 +246,8 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     zero_scalar_f = fem.Constant(facet_mesh, dtype(0.0))
     L_form = (
         inner(f, v_h) * dx_c
-        + inner(g_N, v_h - vbar_h) * ds(NEUMANN_TAG)
+        + inner(g_N, v_h) * ds(NEUMANN_TAG)
+        - inner(g_N_bar, vbar_h) * dx_f_neumann(NEUMANN_TAG)
         + inner(zero_vec_f, vbar_h) * dx_f
         + zero_scalar_c * q_h * dx_c
         + zero_scalar_f * qbar_h * dx_f
