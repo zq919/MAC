@@ -51,6 +51,27 @@ def compute_cell_boundary_facets(msh: mesh.Mesh) -> np.ndarray:
 
 
 
+def compute_boundary_facet_integration_entities(msh: mesh.Mesh, boundary_facets: np.ndarray) -> np.ndarray:
+    """Return (cell, local_facet) pairs for the given exterior facets."""
+    tdim = msh.topology.dim
+    fdim = tdim - 1
+    msh.topology.create_connectivity(fdim, tdim)
+    msh.topology.create_connectivity(tdim, fdim)
+    f_to_c = msh.topology.connectivity(fdim, tdim)
+    c_to_f = msh.topology.connectivity(tdim, fdim)
+
+    entities: list[int] = []
+    for facet in boundary_facets:
+        cells = f_to_c.links(facet)
+        assert len(cells) == 1
+        cell = cells[0]
+        local_facets = c_to_f.links(cell)
+        local_index = np.flatnonzero(local_facets == facet)
+        assert len(local_index) == 1
+        entities.extend([cell, int(local_index[0])])
+    return np.asarray(entities, dtype=np.int32)
+
+
 def velocity_exact(x):
     u1 = -x[0] ** 2 * (x[0] - 1.0) ** 2 * x[1] * (x[1] - 1.0) * (2.0 * x[1] - 1.0)
     u2 = x[0] * (x[0] - 1.0) * (2.0 * x[0] - 1.0) * x[1] ** 2 * (x[1] - 1.0) ** 2
@@ -168,25 +189,23 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     u_h, ubar_h, p_h, pbar_h = ufl.TrialFunctions(W)
     v_h, vbar_h, q_h, qbar_h = ufl.TestFunctions(W)
 
-    cell_boundary_facets = compute_cell_boundary_facets(msh)
+    all_cell_boundary_facets = compute_cell_boundary_facets(msh)
     dx_c = ufl.Measure("dx", domain=msh)
-    cell_boundaries = 1
-    ds_c = ufl.Measure("ds", subdomain_data=[(cell_boundaries, cell_boundary_facets)], domain=msh)
     dx_f = ufl.Measure("dx", domain=facet_mesh)
 
     dirichlet_facets = mesh.locate_entities_boundary(msh, fdim, top_bottom_boundary)
     neumann_facets = mesh.locate_entities_boundary(msh, fdim, left_right_boundary)
-    mt_facets = np.hstack((dirichlet_facets, neumann_facets)).astype(np.int32)
-    mt_values = np.hstack(
-        (
-            np.full(len(dirichlet_facets), DIRICHLET_TAG, dtype=np.int32),
-            np.full(len(neumann_facets), NEUMANN_TAG, dtype=np.int32),
-        )
+    dirichlet_cell_boundary_facets = compute_boundary_facet_integration_entities(msh, dirichlet_facets)
+    neumann_cell_boundary_facets = compute_boundary_facet_integration_entities(msh, neumann_facets)
+    ds_c = ufl.Measure(
+        "ds",
+        subdomain_data=[
+            (0, all_cell_boundary_facets),
+            (DIRICHLET_TAG, dirichlet_cell_boundary_facets),
+            (NEUMANN_TAG, neumann_cell_boundary_facets),
+        ],
+        domain=msh,
     )
-    order = np.argsort(mt_facets)
-    facet_tags = mesh.meshtags(msh, fdim, mt_facets[order], mt_values[order])
-    ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
-
 
     nu = fem.Constant(msh, dtype(1.0))
     epsilon_p = fem.Constant(msh, dtype(1.0e-12))
@@ -203,12 +222,12 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
 
     a = (
         nu * inner(grad(u_h), grad(v_h)) * dx_c
-        - nu * inner(u_h - ubar_h, dot(grad(v_h), n_vec)) * ds_c(cell_boundaries)
-        - nu * inner(dot(grad(u_h), n_vec), v_h - vbar_h) * ds_c(cell_boundaries)
-        + nu * (alpha / h) * inner(u_h - ubar_h, v_h - vbar_h) * ds_c(cell_boundaries)
+        - nu * inner(u_h - ubar_h, dot(grad(v_h), n_vec)) * ds_c(0)
+        - nu * inner(dot(grad(u_h), n_vec), v_h - vbar_h) * ds_c(0)
+        + nu * (alpha / h) * inner(u_h - ubar_h, v_h - vbar_h) * ds_c(0)
     )
-    b_vp = -inner(p_h, div(v_h)) * dx_c + inner(dot(v_h, n_vec), pbar_h) * ds_c(cell_boundaries)
-    b_uq = -inner(q_h, div(u_h)) * dx_c + inner(dot(u_h, n_vec), qbar_h) * ds_c(cell_boundaries)
+    b_vp = -inner(p_h, div(v_h)) * dx_c + inner(dot(v_h, n_vec), pbar_h) * ds_c(0)
+    b_uq = -inner(q_h, div(u_h)) * dx_c + inner(dot(u_h, n_vec), qbar_h) * ds_c(0)
     A_form = a + b_vp + b_uq + epsilon_p * p_h * q_h * dx_c
 
     zero_scalar_c = fem.Constant(msh, dtype(0.0))
@@ -217,8 +236,8 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     # Build RHS blocks manually. In FEniCSx 0.9.0, extracting mixed-domain
     # blocks from a single linear form is fragile when different blocks live on
     # different integration domains.
-    L_u = inner(f, v_h) * dx_c + inner(traction_N, v_h) * ds(NEUMANN_TAG)
-    L_ubar = inner(normal_flux_u, vbar_h) * ds(NEUMANN_TAG)
+    L_u = inner(f, v_h) * dx_c + inner(traction_N, v_h) * ds_c(NEUMANN_TAG)
+    L_ubar = inner(normal_flux_u, vbar_h) * ds_c(NEUMANN_TAG)
     L_p = zero_scalar_c * q_h * dx_c
     L_pbar = zero_scalar_f * qbar_h * dx_f
 
