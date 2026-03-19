@@ -241,7 +241,6 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     b_uq = -inner(q_h, div(u_h)) * dx_c + inner(dot(u_h, n_vec), qbar_h) * ds_c(cell_boundaries)
     A_form = a + b_vp + b_uq + epsilon_p * p_h * q_h * dx_c
 
-    zero_vec_f = fem.Constant(facet_mesh, np.zeros(gdim, dtype=PETSc.ScalarType))
     zero_scalar_c = fem.Constant(msh, dtype(0.0))
     zero_scalar_f = fem.Constant(facet_mesh, dtype(0.0))
 
@@ -249,7 +248,7 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     # blocks from a single linear form is fragile when different blocks live on
     # different integration domains.
     L_u = inner(f, v_h) * dx_c + inner(g_N, v_h) * ds(NEUMANN_TAG)
-    L_ubar = -inner(g_N_bar, vbar_h) * dx_f_neumann(NEUMANN_TAG) + inner(zero_vec_f, vbar_h) * dx_f
+    L_ubar = -inner(g_N_bar, vbar_h) * dx_f_neumann(NEUMANN_TAG)
     L_p = zero_scalar_c * q_h * dx_c
     L_pbar = zero_scalar_f * qbar_h * dx_f
 
