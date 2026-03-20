@@ -217,8 +217,7 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     h = ufl.CellDiameter(msh)
     n_vec = ufl.FacetNormal(msh)
     alpha = fem.Constant(msh, dtype(16.0 * k**2))
-    traction_N = -nu * dot(grad(u_exact), n_vec) + p_exact * n_vec
-    normal_flux_u = nu * dot(grad(u_exact), n_vec)
+    g_N = -nu * dot(grad(u_exact), n_vec) + p_exact * n_vec
 
     a = (
         nu * inner(grad(u_h), grad(v_h)) * dx_c
@@ -236,8 +235,10 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     # Build RHS blocks manually. In FEniCSx 0.9.0, extracting mixed-domain
     # blocks from a single linear form is fragile when different blocks live on
     # different integration domains.
-    L_u = inner(f, v_h) * dx_c + inner(traction_N, v_h) * ds_c(NEUMANN_TAG)
-    L_ubar = inner(normal_flux_u, vbar_h) * ds_c(NEUMANN_TAG)
+    # Mixed-boundary HDG RHS following the non-homogeneous formulation:
+    # F_h(v_h) = (f, v_h)_Omega + <g_N, vbar_h>_{Gamma_N}.
+    L_u = inner(f, v_h) * dx_c
+    L_ubar = inner(g_N, vbar_h) * ds_c(NEUMANN_TAG)
     L_p = zero_scalar_c * q_h * dx_c
     L_pbar = zero_scalar_f * qbar_h * dx_f
 
@@ -253,10 +254,9 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     facet_mesh_boundary_facets = facet_mesh_boundary_facets[facet_mesh_boundary_facets >= 0]
     facet_mesh.topology.create_connectivity(fdim, fdim)
     velocity_dofs = fem.locate_dofs_topological(Vbar, fdim, facet_mesh_boundary_facets)
-    zero_dirichlet = fem.Function(Vbar)
-    zero_dirichlet.x.array[:] = 0.0
-    zero_dirichlet.x.scatter_forward()
-    velocity_bc = fem.dirichletbc(zero_dirichlet, velocity_dofs)
+    dirichlet_data = fem.Function(Vbar)
+    dirichlet_data.interpolate(velocity_exact)
+    velocity_bc = fem.dirichletbc(dirichlet_data, velocity_dofs)
 
     A = assemble_matrix_block(A_blocked, bcs=[velocity_bc])
     A.assemble()
