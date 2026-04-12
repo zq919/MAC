@@ -4,9 +4,9 @@ Boundary conditions:
 - top/bottom: Dirichlet velocity
 - left/right: Neumann traction obtained from the analytical solution
 
-This script uses a gradient-based HDG formulation for Stokes with mixed
-Dirichlet/Neumann boundaries, following the structure of Formulation 2.24 in
-Shannon & Bui-Thanh, "New HDG Methods for the Stokes and Oseen Equations".
+The script follows the FEniCSx 0.9.0 mixed-domain HDG assembly pattern and
+implements the non-homogeneous mixed-boundary variational form in the style
+used by the companion Stokes demo.
 """
 
 from __future__ import annotations
@@ -27,8 +27,6 @@ from ufl import div, dot, grad, inner
 
 DIRICHLET_TAG = 1
 NEUMANN_TAG = 2
-NON_DIRICHLET_TAG = 3
-ALL_FACETS_TAG = 4
 
 
 def par_print(comm: MPI.Intracomm, msg: str) -> None:
@@ -69,16 +67,6 @@ def compute_boundary_facet_integration_entities(msh: mesh.Mesh, boundary_facets:
         assert len(local_index) == 1
         entities.extend([cell, int(local_index[0])])
     return np.asarray(entities, dtype=np.int32)
-
-
-def exclude_integration_entities(all_entities: np.ndarray, excluded_entities: np.ndarray) -> np.ndarray:
-    """Remove (cell, local_facet) pairs in ``excluded_entities`` from ``all_entities``."""
-    all_pairs = all_entities.reshape(-1, 2)
-    excluded = {tuple(pair) for pair in excluded_entities.reshape(-1, 2)}
-    kept_pairs = [pair for pair in all_pairs if tuple(pair) not in excluded]
-    if not kept_pairs:
-        return np.empty(0, dtype=np.int32)
-    return np.asarray(kept_pairs, dtype=np.int32).reshape(-1)
 
 
 
@@ -183,43 +171,41 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     mesh_to_facet_mesh[facet_mesh_to_mesh] = np.arange(len(facet_mesh_to_mesh), dtype=np.int32)
     entity_maps = {facet_mesh: mesh_to_facet_mesh}
 
-    G_el = basix.ufl.element("P", msh.basix_cell(), k, discontinuous=True, shape=(gdim, gdim))
     V_el = basix.ufl.element("P", msh.basix_cell(), k, discontinuous=True, shape=(gdim,))
-    Q_el = basix.ufl.element("P", msh.basix_cell(), k, discontinuous=True)
     Vbar_el = basix.ufl.element("P", facet_mesh.basix_cell(), k, discontinuous=True, shape=(gdim,))
+    Q_el = basix.ufl.element("P", msh.basix_cell(), k - 1, discontinuous=True)
+    Qbar_el = basix.ufl.element("P", facet_mesh.basix_cell(), k, discontinuous=True)
 
-    G = fem.functionspace(msh, G_el)
     V = fem.functionspace(msh, V_el)
-    Q = fem.functionspace(msh, Q_el)
     Vbar = fem.functionspace(facet_mesh, Vbar_el)
-    W = ufl.MixedFunctionSpace(G, V, Q, Vbar)
+    Q = fem.functionspace(msh, Q_el)
+    Qbar = fem.functionspace(facet_mesh, Qbar_el)
+    W = ufl.MixedFunctionSpace(V, Vbar, Q, Qbar)
 
-    L_h, u_h, p_h, ubar_h = ufl.TrialFunctions(W)
-    G_h, v_h, q_h, vbar_h = ufl.TestFunctions(W)
+    u_h, ubar_h, p_h, pbar_h = ufl.TrialFunctions(W)
+    v_h, vbar_h, q_h, qbar_h = ufl.TestFunctions(W)
 
     all_cell_boundary_facets = compute_cell_boundary_facets(msh)
     dx_c = ufl.Measure("dx", domain=msh)
+    dx_f = ufl.Measure("dx", domain=facet_mesh)
 
     dirichlet_facets = mesh.locate_entities_boundary(msh, fdim, top_bottom_boundary)
     neumann_facets = mesh.locate_entities_boundary(msh, fdim, left_right_boundary)
     dirichlet_cell_boundary_facets = compute_boundary_facet_integration_entities(msh, dirichlet_facets)
     neumann_cell_boundary_facets = compute_boundary_facet_integration_entities(msh, neumann_facets)
-    non_dirichlet_cell_boundary_facets = exclude_integration_entities(
-        all_cell_boundary_facets, dirichlet_cell_boundary_facets
-    )
     ds_c = ufl.Measure(
         "ds",
         subdomain_data=[
-            (ALL_FACETS_TAG, all_cell_boundary_facets),
+            (0, all_cell_boundary_facets),
             (DIRICHLET_TAG, dirichlet_cell_boundary_facets),
             (NEUMANN_TAG, neumann_cell_boundary_facets),
-            (NON_DIRICHLET_TAG, non_dirichlet_cell_boundary_facets),
         ],
         domain=msh,
     )
 
     nu = fem.Constant(msh, dtype(1.0))
-    inv_nu = fem.Constant(msh, dtype(1.0))
+    epsilon_p = fem.Constant(msh, dtype(1.0e-12))
+    dt = fem.Constant(msh, dtype(1.0))
     x = ufl.SpatialCoordinate(msh)
     u_exact = velocity_exact(x)
     p_exact = pressure_exact(x)
@@ -227,35 +213,54 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
 
     h = ufl.CellDiameter(msh)
     n_vec = ufl.FacetNormal(msh)
-    tau = fem.Constant(msh, dtype(16.0 * k**2)) / h
+    alpha = fem.Constant(msh, dtype(16.0 * k**2))
+
+    g_D = u_exact
     g_N = -nu * dot(grad(u_exact), n_vec) + p_exact * n_vec
+    u_prev = u_exact
 
-    # Literature-based mixed-boundary HDG form with L = nu * grad(u):
-    # (inv_nu L, G) + (u, div G) - <ubar, G n> = 0
-    # (L, grad v) - (p, div v) + <tau (u - ubar), v> = (f, v)
-    # -(u, grad q) + <ubar · n, q> = 0
-    # < -L n + p n + tau (u - ubar), vbar >_{interior U Gamma_N} = <g_N, vbar>_{Gamma_N}
-    A_form = (
-        inv_nu * inner(L_h, G_h) * dx_c
-        + inner(u_h, div(G_h)) * dx_c
-        - inner(ubar_h, dot(G_h, n_vec)) * ds_c(ALL_FACETS_TAG)
-        + inner(L_h, grad(v_h)) * dx_c
-        - inner(p_h, div(v_h)) * dx_c
-        + tau * inner(u_h - ubar_h, v_h) * ds_c(ALL_FACETS_TAG)
-        - inner(u_h, grad(q_h)) * dx_c
-        + inner(dot(ubar_h, n_vec), q_h) * ds_c(ALL_FACETS_TAG)
-        + inner(-dot(L_h, n_vec) + p_h * n_vec + tau * (u_h - ubar_h), vbar_h) * ds_c(NON_DIRICHLET_TAG)
+    # Non-homogeneous mixed-boundary HDG form in the primal (u, ubar, p, pbar)
+    # style:
+    #  - pressure-trace/velocity-trace consistency terms on Gamma_N are treated
+    #    with the red correction terms from the provided variational equation;
+    #  - non-homogeneous Dirichlet data contributes to the qbar equation on
+    #    Gamma_D through <g_D · n, qbar>_{Gamma_D};
+    #  - non-homogeneous Neumann traction contributes through
+    #    -<g_N, vbar>_{Gamma_N}.
+    a = (
+        inner(u_h / dt, v_h) * dx_c
+        + nu * inner(grad(u_h), grad(v_h)) * dx_c
+        - nu * inner(u_h - ubar_h, dot(grad(v_h), n_vec)) * ds_c(0)
+        - nu * inner(dot(grad(u_h), n_vec), v_h - vbar_h) * ds_c(0)
+        + nu * (alpha / h) * inner(u_h - ubar_h, v_h - vbar_h) * ds_c(0)
     )
+    b_vp = (
+        -inner(p_h, div(v_h)) * dx_c
+        + inner(pbar_h, dot(v_h, n_vec)) * ds_c(0)
+        - inner(pbar_h, dot(vbar_h, n_vec)) * ds_c(NEUMANN_TAG)
+    )
+    b_uq = (
+        -inner(q_h, div(u_h)) * dx_c
+        + inner(dot(u_h, n_vec), qbar_h) * ds_c(0)
+        - inner(dot(ubar_h, n_vec), qbar_h) * ds_c(NEUMANN_TAG)
+    )
+    A_form = a + b_vp + b_uq + epsilon_p * p_h * q_h * dx_c
 
-    zero_tensor = fem.Constant(msh, np.zeros((gdim, gdim), dtype=PETSc.ScalarType))
-    zero_scalar = fem.Constant(msh, dtype(0.0))
-    L_blocked = [
-        fem.form(inner(zero_tensor, G_h) * dx_c),
-        fem.form(inner(f, v_h) * dx_c),
-        fem.form(zero_scalar * q_h * dx_c),
-        fem.form(inner(g_N, vbar_h) * ds_c(NEUMANN_TAG), entity_maps=entity_maps),
-    ]
+    zero_scalar_c = fem.Constant(msh, dtype(0.0))
+    zero_scalar_f = fem.Constant(facet_mesh, dtype(0.0))
+
+    L_u = inner(f + u_prev / dt, v_h) * dx_c
+    L_ubar = -inner(g_N, vbar_h) * ds_c(NEUMANN_TAG)
+    L_p = zero_scalar_c * q_h * dx_c
+    L_pbar = inner(dot(g_D, n_vec), qbar_h) * ds_c(DIRICHLET_TAG) + zero_scalar_f * qbar_h * dx_f
+
     A_blocked = fem.form(ufl.extract_blocks(A_form), entity_maps=entity_maps)
+    L_blocked = [
+        fem.form(L_u),
+        fem.form(L_ubar, entity_maps=entity_maps),
+        fem.form(L_p),
+        fem.form(L_pbar, entity_maps=entity_maps),
+    ]
 
     facet_mesh_boundary_facets = mesh_to_facet_mesh[dirichlet_facets]
     facet_mesh_boundary_facets = facet_mesh_boundary_facets[facet_mesh_boundary_facets >= 0]
@@ -270,28 +275,28 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     b = assemble_vector_block(L_blocked, A_blocked, bcs=[velocity_bc])
     x_vec = solve_with_petsc(A, b, msh.comm, prefix=f"stokes_numman_{n}")
 
-    offset_L = G.dofmap.index_map.size_local * G.dofmap.index_map_bs
     offset_u = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
-    offset_p = Q.dofmap.index_map.size_local * Q.dofmap.index_map_bs
     offset_ubar = Vbar.dofmap.index_map.size_local * Vbar.dofmap.index_map_bs
+    offset_p = Q.dofmap.index_map.size_local * Q.dofmap.index_map_bs
+    offset_pbar = Qbar.dofmap.index_map.size_local * Qbar.dofmap.index_map_bs
 
-    Lh = fem.Function(G)
     uh = fem.Function(V)
-    ph = fem.Function(Q)
     ubarh = fem.Function(Vbar)
+    ph = fem.Function(Q)
+    pbarh = fem.Function(Qbar)
     sol = x_vec.array_r
     pos = 0
-    Lh.x.array[:offset_L] = sol[pos : pos + offset_L]
-    pos += offset_L
     uh.x.array[:offset_u] = sol[pos : pos + offset_u]
     pos += offset_u
+    ubarh.x.array[:offset_ubar] = sol[pos : pos + offset_ubar]
+    pos += offset_ubar
     ph.x.array[:offset_p] = sol[pos : pos + offset_p]
     pos += offset_p
-    ubarh.x.array[:offset_ubar] = sol[pos : pos + offset_ubar]
-    Lh.x.scatter_forward()
+    pbarh.x.array[:offset_pbar] = sol[pos : pos + offset_pbar]
     uh.x.scatter_forward()
-    ph.x.scatter_forward()
     ubarh.x.scatter_forward()
+    ph.x.scatter_forward()
+    pbarh.x.scatter_forward()
 
     x = ufl.SpatialCoordinate(msh)
     u_exact = velocity_exact(x)
