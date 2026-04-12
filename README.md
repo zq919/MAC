@@ -8,14 +8,16 @@ This repository contains FEniCSx 0.9.0-oriented HDG examples and notes.
 
 - `hdg_conv_diff_fenicsx_0_9_fix.py`: HDG convection-diffusion example on the unit square.
 - `hdg_stokes_fenicsx_0_9.py`: 2D HDG Stokes example using the HDG polynomial spaces
-- `stokes-numman.py`: HDG Stokes example on `[0,1] x [0,1]` with homogeneous Dirichlet velocity on the top/bottom boundaries and exact-solution Neumann traction on the left/right boundaries.
+- `stokes-numman.py`: HDG Stokes example on `[0,1] x [0,1]` with Dirichlet velocity on the top/bottom boundaries and exact-solution Neumann traction on the left/right boundaries, using a gradient-based mixed-boundary HDG formulation with
 
   $$
+  G_h(K)=[P_k(K)]^{d\times d},\qquad
   V_h(K)=[P_k(K)]^d,\qquad
-  \bar V_h(F)=[P_k(F)]^d,\qquad
-  Q_h(K)=P_{k-1}(K),\qquad
-  \bar Q_h(F)=P_k(F),
+  Q_h(K)=P_k(K),\qquad
+  \bar V_h(F)=[P_k(F)]^d,
   $$
+
+  following the mixed-boundary HDG structure of Shannon & Bui-Thanh, *New HDG Methods for the Stokes and Oseen Equations*.
 
   together with the analytical solution
 
