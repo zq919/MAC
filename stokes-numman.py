@@ -205,7 +205,6 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
 
     nu = fem.Constant(msh, dtype(1.0))
     epsilon_p = fem.Constant(msh, dtype(1.0e-12))
-    dt = fem.Constant(msh, dtype(1.0))
     x = ufl.SpatialCoordinate(msh)
     u_exact = velocity_exact(x)
     p_exact = pressure_exact(x)
@@ -215,21 +214,16 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     n_vec = ufl.FacetNormal(msh)
     alpha = fem.Constant(msh, dtype(16.0 * k**2))
 
-    g_D = u_exact
     g_N = -nu * dot(grad(u_exact), n_vec) + p_exact * n_vec
-    u_prev = u_exact
-
     # Non-homogeneous mixed-boundary HDG form in the primal (u, ubar, p, pbar)
     # style:
     #  - pressure-trace/velocity-trace consistency terms on Gamma_N are treated
     #    with the red correction terms from the provided variational equation;
-    #  - non-homogeneous Dirichlet data contributes to the qbar equation on
-    #    Gamma_D through <g_D · n, qbar>_{Gamma_D};
+    #  - non-homogeneous Dirichlet data is imposed strongly on ubar over Gamma_D;
     #  - non-homogeneous Neumann traction contributes through
     #    -<g_N, vbar>_{Gamma_N}.
     a = (
-        inner(u_h / dt, v_h) * dx_c
-        + nu * inner(grad(u_h), grad(v_h)) * dx_c
+        nu * inner(grad(u_h), grad(v_h)) * dx_c
         - nu * inner(u_h - ubar_h, dot(grad(v_h), n_vec)) * ds_c(0)
         - nu * inner(dot(grad(u_h), n_vec), v_h - vbar_h) * ds_c(0)
         + nu * (alpha / h) * inner(u_h - ubar_h, v_h - vbar_h) * ds_c(0)
@@ -249,10 +243,10 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     zero_scalar_c = fem.Constant(msh, dtype(0.0))
     zero_scalar_f = fem.Constant(facet_mesh, dtype(0.0))
 
-    L_u = inner(f + u_prev / dt, v_h) * dx_c
+    L_u = inner(f, v_h) * dx_c
     L_ubar = -inner(g_N, vbar_h) * ds_c(NEUMANN_TAG)
     L_p = zero_scalar_c * q_h * dx_c
-    L_pbar = inner(dot(g_D, n_vec), qbar_h) * ds_c(DIRICHLET_TAG) + zero_scalar_f * qbar_h * dx_f
+    L_pbar = zero_scalar_f * qbar_h * dx_f
 
     A_blocked = fem.form(ufl.extract_blocks(A_form), entity_maps=entity_maps)
     L_blocked = [
