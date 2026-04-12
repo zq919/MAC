@@ -1,4 +1,4 @@
-"""FEniCSx 0.9.0 HDG Stokes demo in 2D.
+"""FEniCSx 0.9.0 HDG Stokes demo in 2D (mixed boundaries).
 
 This version follows the HDG polynomial-space definition requested by the user:
 
@@ -6,6 +6,10 @@ This version follows the HDG polynomial-space definition requested by the user:
 - Vbar_h(F): [P_k(F)]^d
 - Q_h(K): P_{k-1}(K)
 - Qbar_h(F): P_k(F)
+
+Boundary conditions:
+- top/bottom: Dirichlet velocity
+- left/right: non-homogeneous Neumann traction (from exact solution)
 
 The script runs a mesh-refinement study and reports:
 - velocity L2 error and observed rate
@@ -29,6 +33,8 @@ from mpi4py import MPI
 from petsc4py import PETSc
 from ufl import div, dot, grad, inner
 
+DIRICHLET_TAG = 1
+NEUMANN_TAG = 2
 
 
 def par_print(comm: MPI.Intracomm, msg: str) -> None:
@@ -37,12 +43,9 @@ def par_print(comm: MPI.Intracomm, msg: str) -> None:
         sys.stdout.flush()
 
 
-
 def norm_L2(comm: MPI.Intracomm, expr, measure=ufl.dx) -> np.floating:
     value = fem.assemble_scalar(fem.form(inner(expr, expr) * measure))
     return np.sqrt(comm.allreduce(value, op=MPI.SUM))
-
-
 
 
 def compute_cell_boundary_facets(msh: mesh.Mesh) -> np.ndarray:
@@ -54,6 +57,26 @@ def compute_cell_boundary_facets(msh: mesh.Mesh) -> np.ndarray:
     return np.vstack((np.repeat(np.arange(n_c), n_f), np.tile(np.arange(n_f), n_c))).T.flatten()
 
 
+def compute_boundary_facet_integration_entities(msh: mesh.Mesh, boundary_facets: np.ndarray) -> np.ndarray:
+    """Return (cell, local_facet) pairs for the given exterior facets."""
+    tdim = msh.topology.dim
+    fdim = tdim - 1
+    msh.topology.create_connectivity(fdim, tdim)
+    msh.topology.create_connectivity(tdim, fdim)
+    f_to_c = msh.topology.connectivity(fdim, tdim)
+    c_to_f = msh.topology.connectivity(tdim, fdim)
+
+    entities: list[int] = []
+    for facet in boundary_facets:
+        cells = f_to_c.links(facet)
+        assert len(cells) == 1
+        cell = cells[0]
+        local_facets = c_to_f.links(cell)
+        local_index = np.flatnonzero(local_facets == facet)
+        assert len(local_index) == 1
+        entities.extend([cell, int(local_index[0])])
+    return np.asarray(entities, dtype=np.int32)
+
 
 def velocity_exact(x):
     """Exact velocity from the Stokes benchmark shown by the user."""
@@ -64,11 +87,17 @@ def velocity_exact(x):
     return np.vstack((u1, u2))
 
 
-
 def pressure_exact(x):
     """Exact pressure from the Stokes benchmark shown by the user."""
     return x[0] ** 6 - x[1] ** 6
 
+
+def top_bottom_boundary(x):
+    return np.isclose(x[1], 0.0) | np.isclose(x[1], 1.0)
+
+
+def left_right_boundary(x):
+    return np.isclose(x[0], 0.0) | np.isclose(x[0], 1.0)
 
 
 def solve_with_petsc(A: PETSc.Mat, b: PETSc.Vec, comm: MPI.Intracomm, prefix: str) -> PETSc.Vec:
@@ -143,7 +172,6 @@ def solve_with_petsc(A: PETSc.Mat, b: PETSc.Vec, comm: MPI.Intracomm, prefix: st
 
 def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, float]:
     """Solve the HDG Stokes problem on an n x n mesh."""
-    dtype = PETSc.ScalarType
     msh = mesh.create_unit_square(comm, n, n)
     tdim = msh.topology.dim
     fdim = tdim - 1
@@ -175,11 +203,23 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     v_h, vbar_h, q_h, qbar_h = ufl.TestFunctions(W)
 
     # Measures
-    cell_boundary_facets = compute_cell_boundary_facets(msh)
+    all_cell_boundary_facets = compute_cell_boundary_facets(msh)
     dx_c = ufl.Measure("dx", domain=msh)
-    cell_boundaries = 1
-    ds_c = ufl.Measure("ds", subdomain_data=[(cell_boundaries, cell_boundary_facets)], domain=msh)
     dx_f = ufl.Measure("dx", domain=facet_mesh)
+
+    dirichlet_facets = mesh.locate_entities_boundary(msh, fdim, top_bottom_boundary)
+    neumann_facets = mesh.locate_entities_boundary(msh, fdim, left_right_boundary)
+    dirichlet_cell_boundary_facets = compute_boundary_facet_integration_entities(msh, dirichlet_facets)
+    neumann_cell_boundary_facets = compute_boundary_facet_integration_entities(msh, neumann_facets)
+    ds_c = ufl.Measure(
+        "ds",
+        subdomain_data=[
+            (0, all_cell_boundary_facets),
+            (DIRICHLET_TAG, dirichlet_cell_boundary_facets),
+            (NEUMANN_TAG, neumann_cell_boundary_facets),
+        ],
+        domain=msh,
+    )
 
     # Exact solution and forcing term
     nu = fem.Constant(msh, dtype(1.0))
@@ -193,39 +233,51 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     h = ufl.CellDiameter(msh)
     n_vec = ufl.FacetNormal(msh)
     alpha = fem.Constant(msh, dtype(16.0 * k**2))
+    g_N = -nu * dot(grad(u_exact), n_vec) + p_exact * n_vec
 
-    # HDG velocity bilinear form
+    # Non-homogeneous mixed-boundary HDG form:
+    # - Dirichlet on Gamma_D imposed strongly on ubar_h.
+    # - Neumann data enters via -<g_N, vbar_h>_{Gamma_N}.
+    # - Gamma_N correction terms are included for pbar_h/vbar_h and
+    #   ubar_h/qbar_h couplings following the requested variational form.
     a = (
         nu * inner(grad(u_h), grad(v_h)) * dx_c
-        - nu * inner(u_h - ubar_h, dot(grad(v_h), n_vec)) * ds_c(cell_boundaries)
-        - nu * inner(dot(grad(u_h), n_vec), v_h - vbar_h) * ds_c(cell_boundaries)
-        + nu * (alpha / h) * inner(u_h - ubar_h, v_h - vbar_h) * ds_c(cell_boundaries)
+        - nu * inner(u_h - ubar_h, dot(grad(v_h), n_vec)) * ds_c(0)
+        - nu * inner(dot(grad(u_h), n_vec), v_h - vbar_h) * ds_c(0)
+        + nu * (alpha / h) * inner(u_h - ubar_h, v_h - vbar_h) * ds_c(0)
     )
-
-    # Stokes coupling with the HDG polynomial spaces.
-    b_vp = -inner(p_h, div(v_h)) * dx_c + inner(dot(v_h, n_vec), pbar_h) * ds_c(cell_boundaries)
-    b_uq = -inner(q_h, div(u_h)) * dx_c + inner(dot(u_h, n_vec), qbar_h) * ds_c(cell_boundaries)
-    # Small pressure regularization removes the constant-pressure nullspace and
-    # lets us use direct solvers without a separate gauge constraint.
+    b_vp = (
+        -inner(p_h, div(v_h)) * dx_c
+        + inner(pbar_h, dot(v_h, n_vec)) * ds_c(0)
+        - inner(pbar_h, dot(vbar_h, n_vec)) * ds_c(NEUMANN_TAG)
+    )
+    b_uq = (
+        -inner(q_h, div(u_h)) * dx_c
+        + inner(dot(u_h, n_vec), qbar_h) * ds_c(0)
+        - inner(dot(ubar_h, n_vec), qbar_h) * ds_c(NEUMANN_TAG)
+    )
     A_form = a + b_vp + b_uq + epsilon_p * p_h * q_h * dx_c
 
-    zero_vec_f = fem.Constant(facet_mesh, np.zeros(gdim, dtype=PETSc.ScalarType))
+    # Build RHS blocks manually. In FEniCSx 0.9.0, mixed-domain extraction from
+    # a single linear form is less robust than explicit per-block forms.
     zero_scalar_c = fem.Constant(msh, dtype(0.0))
     zero_scalar_f = fem.Constant(facet_mesh, dtype(0.0))
-    L_form = (
-        inner(f, v_h) * dx_c
-        + inner(zero_vec_f, vbar_h) * dx_f
-        + zero_scalar_c * q_h * dx_c
-        + zero_scalar_f * qbar_h * dx_f
-    )
+    L_u = inner(f, v_h) * dx_c
+    L_ubar = -inner(g_N, vbar_h) * ds_c(NEUMANN_TAG)
+    L_p = zero_scalar_c * q_h * dx_c
+    L_pbar = zero_scalar_f * qbar_h * dx_f
 
     # Compile forms
     A_blocked = fem.form(ufl.extract_blocks(A_form), entity_maps=entity_maps)
-    L_blocked = fem.form(ufl.extract_blocks(L_form), entity_maps=entity_maps)
+    L_blocked = [
+        fem.form(L_u),
+        fem.form(L_ubar, entity_maps=entity_maps),
+        fem.form(L_p),
+        fem.form(L_pbar, entity_maps=entity_maps),
+    ]
 
-    # Dirichlet condition on the trace velocity.
-    msh_boundary_facets = mesh.exterior_facet_indices(msh.topology)
-    facet_mesh_boundary_facets = mesh_to_facet_mesh[msh_boundary_facets]
+    # Dirichlet condition on the trace velocity: top/bottom only.
+    facet_mesh_boundary_facets = mesh_to_facet_mesh[dirichlet_facets]
     facet_mesh_boundary_facets = facet_mesh_boundary_facets[facet_mesh_boundary_facets >= 0]
     facet_mesh.topology.create_connectivity(fdim, fdim)
     velocity_dofs = fem.locate_dofs_topological(Vbar, fdim, facet_mesh_boundary_facets)
@@ -273,7 +325,6 @@ def solve_level(comm: MPI.Intracomm, n: int, k: int) -> tuple[float, float, floa
     e_p = norm_L2(msh.comm, ph - p_exact)
     e_div = norm_L2(msh.comm, div(uh))
     return float(e_u), float(e_p), float(e_div)
-
 
 
 def convergence_rate(err_old: float, err_new: float) -> float:
