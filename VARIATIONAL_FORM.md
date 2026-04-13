@@ -385,3 +385,68 @@ $$
 - `A_form`：对应当前 Stokes 的总双线性形式；
 - `L_form`：对应当前 Stokes 的右端线性形式；
 - `velocity_bc = fem.dirichletbc(ubar_bc, velocity_dofs)`：对应边界上对速度迹 $\bar{\boldsymbol{u}}_h$ 施加 Dirichlet 条件。
+
+## 14. `hdg_stokes_fenicsx_0_9.py` 的非齐次混合边界变分（上下 Dirichlet，左右 Neumann）
+
+这一节对应当前 `hdg_stokes_fenicsx_0_9.py` 的 mixed-boundary 版本：
+
+- 令
+  $$
+  \Gamma_D = \{y=0\}\cup\{y=1\},\qquad
+  \Gamma_N = \{x=0\}\cup\{x=1\};
+  $$
+- 在 $\Gamma_D$ 上施加速度 Dirichlet 条件；
+- 在 $\Gamma_N$ 上施加非齐次 Neumann traction 条件
+  $$
+  \boldsymbol{g}_N = -\nu\,\nabla \boldsymbol{u}\,\boldsymbol{n} + p\,\boldsymbol{n}.
+  $$
+
+设离散未知与测试函数仍为
+$$
+(\boldsymbol{u}_h,\bar{\boldsymbol{u}}_h,p_h,\bar p_h),
+(\boldsymbol{v}_h,\bar{\boldsymbol{v}}_h,q_h,\bar q_h)
+\in V_h\times\bar V_h\times Q_h\times\bar Q_h.
+$$
+
+离散问题写成：求
+$$
+(\boldsymbol{u}_h,\bar{\boldsymbol{u}}_h,p_h,\bar p_h)
+\in V_h\times\bar V_h\times Q_h\times\bar Q_h,
+$$
+满足
+$$
+\bar{\boldsymbol{u}}_h = \boldsymbol{u}_D\quad\text{on }\Gamma_D,
+$$
+且对任意测试函数成立
+$$
+\begin{aligned}
+&\sum_{K\in\mathcal{T}_h}(\nu\nabla\boldsymbol{u}_h,\nabla\boldsymbol{v}_h)_K
+-\sum_{K\in\mathcal{T}_h}\langle \nu(\boldsymbol{u}_h-\bar{\boldsymbol{u}}_h),\partial_n\boldsymbol{v}_h\rangle_{\partial K}
+-\sum_{K\in\mathcal{T}_h}\langle \nu\partial_n\boldsymbol{u}_h,\boldsymbol{v}_h-\bar{\boldsymbol{v}}_h\rangle_{\partial K} \\
+&\quad +\sum_{K\in\mathcal{T}_h}\langle \nu\gamma_K(\boldsymbol{u}_h-\bar{\boldsymbol{u}}_h),\boldsymbol{v}_h-\bar{\boldsymbol{v}}_h\rangle_{\partial K}
+-(p_h,\nabla\cdot\boldsymbol{v}_h)_\Omega
++\sum_{K\in\mathcal{T}_h}\langle \bar p_h,\boldsymbol{v}_h\cdot\boldsymbol{n}\rangle_{\partial K}
+{\color{red}{-\langle \bar p_h,\bar{\boldsymbol{v}}_h\cdot\boldsymbol{n}\rangle_{\Gamma_N}}} \\
+&\quad -(\nabla\cdot\boldsymbol{u}_h,q_h)_\Omega
++\sum_{K\in\mathcal{T}_h}\langle \boldsymbol{u}_h\cdot\boldsymbol{n},\bar q_h\rangle_{\partial K}
+{\color{red}{-\langle \bar{\boldsymbol{u}}_h\cdot\boldsymbol{n},\bar q_h\rangle_{\Gamma_N}}}
++\epsilon_p(p_h,q_h)_\Omega \\
+&= (\boldsymbol{f},\boldsymbol{v}_h)_\Omega
+{\color{red}{-\langle \boldsymbol{g}_N,\bar{\boldsymbol{v}}_h\rangle_{\Gamma_N}}}.
+\end{aligned}
+$$
+
+其中，所有用红色标出的都是边界修正/边界载荷项（都发生在边界积分上）。
+
+### 14.1 与代码变量的一一对应
+
+- ${\color{red}{-\langle \bar p_h,\bar{\boldsymbol{v}}_h\cdot\boldsymbol{n}\rangle_{\Gamma_N}}}$ 对应：
+  `- inner(pbar_h, dot(vbar_h, n_vec)) * ds_c(NEUMANN_TAG)`。
+- ${\color{red}{-\langle \bar{\boldsymbol{u}}_h\cdot\boldsymbol{n},\bar q_h\rangle_{\Gamma_N}}}$ 对应：
+  `- inner(dot(ubar_h, n_vec), qbar_h) * ds_c(NEUMANN_TAG)`。
+- ${\color{red}{-\langle \boldsymbol{g}_N,\bar{\boldsymbol{v}}_h\rangle_{\Gamma_N}}}$ 对应：
+  `L_ubar = -inner(g_N, vbar_h) * ds_c(NEUMANN_TAG)`。
+- $\bar{\boldsymbol{u}}_h = \boldsymbol{u}_D$ on $\Gamma_D$ 对应：
+  在 top/bottom 边界自由度上 `velocity_bc = fem.dirichletbc(ubar_bc, velocity_dofs)` 的强施加。
+
+这就是当前 `hdg_stokes_fenicsx_0_9.py` mixed-boundary 版本的变分结构来源。
