@@ -8,6 +8,7 @@ This repository contains FEniCSx 0.9.0-oriented HDG examples and notes.
 
 - `hdg_conv_diff_fenicsx_0_9_fix.py`: HDG convection-diffusion example on the unit square.
 - `hdg_stokes_fenicsx_0_9.py`: 2D HDG Stokes example using the HDG polynomial spaces
+- `Biot_HDG_cou.py`: unsteady Biot HDG demo using mixed block spaces `(u, ubar, p, pbar)` and the variational blocks `e_h`, `a_h`, and `\tilde b_h` with backward-Euler time coupling.
 - `stokes-numman.py`: HDG Stokes example on `[0,1] x [0,1]` with Dirichlet velocity on the top/bottom boundaries and exact-solution Neumann traction on the left/right boundaries, using a mixed-boundary primal HDG formulation with
 
   $$
